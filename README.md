@@ -134,13 +134,13 @@ C-b :kill-server
 git clone https://github.com/near/nearcore
 cd nearcore
 git fetch origin --tags
-git checkout tags/1.28.0-rc.1
+git checkout 1.28.0-rc.2
 
 # Compile binary- it is generated in target/release/neard
-make neard
+cargo build -p neard --release --features shardnet
 
 # Init working directory- generates config.json and node_key.json; downloads genesis.json
-./target/release/neard --home ~/.near init --chain-id <network> --download-genesis
+./target/release/neard --home ~/.near init --chain-id shardnet --download-genesis
 
 # Folder structure in ~/.near
 # - config.json: consensus details
@@ -152,12 +152,104 @@ make neard
 rm ~/.near/config.json
 wget -O ~/.near/config.json https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore-deploy/<network>/config.json
 
-# Install AWS CLI
+# Get shardnet snapshot
+aws s3 --no-sign-request cp s3://build.openshards.io/stakewars/shardnet/data.tar.gz ~/.near/data
 
-# Clone backup
-aws s3 --no-sign-request cp s3://near-protocol-public/backups/<testnet|mainnet>/rpc/latest .
-LATEST=$(cat latest)
-aws s3 --no-sign-request cp --no-sign-request --recursive s3://near-protocol-public/backups/<testnet|mainnet>/rpc/$LATEST ~/.near/data
+# Run node to sync blocks
+./target/release/neard --home ~/.near run
+```
+
+- Obtain key from local PC
+
+```sh
+cat ~/.near-credentials/shardnet/validatoor.shardnet.near.json
+```
+
+- Paste it in `~/.near/validator_key.json` inside the validator, with the following changes
+  1. Change account_id from validatoor.shardnet.near to validatoor.factory.shardnet.near
+  2. Change `private_key` to `secret_key`
+
+  ```json
+  {
+    "account_id": "validatoor.factory.shardnet.near",
+    "public_key": "ed25519:7TdjbHxK35rB83UZGwobsvuAKimgCKmJipej3zcyFHNw",
+    "secret_key": "ed25519:****"
+  }
+  ```
+
+- Setup systemd service
+
+  1. Create file with `sudo vi /etc/systemd/system/neard.service`
+
+  ```
+  Description=NEARd Daemon Service
+
+  [Service]
+  Type=simple
+  User=validatoor
+  #Group=near
+  WorkingDirectory=/home/validatoor/.near
+  ExecStart=/home/validatoor/nearcore/target/release/neard run
+  StandardOutput=file:/home/validatoor/.near/neard.log
+  StandardError=file:/home/validatoor/.near/nearderror.log
+  Restart=on-failure
+  RestartSec=30
+  KillSignal=SIGINT
+  TimeoutStopSec=45
+  KillMode=mixed
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+  2. Enable and start with
+
+  ```sh
+  sudo systemctl enable neard
+  sudo systemctl start neard
+  ```
+
+  3. View logs
+
+  ```sh
+  sudo apt install ccze # for color
+  journalctl -n 100 -f -u neard | ccze -A
+  ```
+
+- Staking pool setup
+
+```sh
+# Create staking pool
+near call factory.shardnet.near create_staking_pool '{"staking_pool_id": "validatoor", "owner_id": "validatoor.shardnet.near", "stake_public_key": "ed25519:7TdjbHxK35rB83UZGwobsvuAKimgCKmJipej3zcyFHNw", "reward_fee_fraction": {"numerator": 5, "denominator": 100}, "code_hash":"DD428g9eqLL8fWUxv8QSpVFzyHi1Qd16P8ephYCTmMSZ"}' --accountId="validatoor.shardnet.near" --amount=30 --gas=300000000000000
+
+# Stake tokens
+near call validatoor.factory.shardnet.near deposit_and_stake --amount 700 --accountId validatoor.shardnet.near --gas=300000000000000
+
+# Ping to join
+near call validatoor.factory.shardnet.near ping '{}' --accountId validatoor.shardnet.near --gas=300000000000000
+```
+
+- Ping cron job setup
+
+```sh
+# Install Node
+curl -sL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install build-essential nodejs
+PATH="$PATH"
+
+# Install CLI
+sudo npm i -g near-cli
+
+# Set shardnet as default
+echo 'export NEAR_ENV=shardnet' >> ~/.bashrc
+
+# login to CLI
+near login
+
+# Open cron config
+crontab -e
+
+# Paste `0 */2 * * * near call validatoor.factory.shardnet.near ping '{}' --accountId validatoor.shardnet.near --gas=300000000000000 > ping_tx.txt` to ping every two hours
 ```
 
 ## Common issues
